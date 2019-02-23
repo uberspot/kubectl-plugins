@@ -29,9 +29,10 @@ fail()   { echo "$(red    "FAIL -") $1" ; }
 
 DIR=$(dirname ${BASH_SOURCE[0]})
 KUBECTL=kubectl
+KUBECTL_ARGS=""
 TOOLBOX_ENTRY_COMMAND="bash"
 TOOLBOX_NAME="toolbox-$(whoami)"
-TOOLBOX_IMAGE="ubuntu-debootstrap"
+TOOLBOX_IMAGE=""
 
 readonly PROGNAME=$(basename $0)
 
@@ -49,12 +50,13 @@ usage() {
     echo "      -v run in verbose mode"
     echo "      -i [docker image to run as toolbox]"
     echo "      -c [entrypoint command to run in toolbox container, defaults to 'bash']"
-    echo "      -n [name for privileged pod, defaults to 'toolbox']"
+    echo "      -n [namespace on the kubernetes context, defaults to your default namespace]"
+    echo "      -p [name for privileged pod, defaults to 'toolbox']"
     echo "      -k [kubectl binary to run, defaults to 'kubectl']"
 }
 
 parse_args() {
-    while getopts "vhi:c:n:k:" OPTION
+    while getopts "vhi:c:n:k:p:" OPTION
     do
          case $OPTION in
          h)  usage
@@ -66,7 +68,9 @@ parse_args() {
              ;;
          c)  TOOLBOX_ENTRY_COMMAND=$OPTARG
              ;;
-         n)  TOOLBOX_NAME=$OPTARG
+         n)  KUBECTL_ARGS="${KUBECTL_ARGS} --namespace=$OPTARG"
+             ;;
+         p)  TOOLBOX_NAME=$OPTARG
              ;;
          k)  KUBECTL=$OPTARG
              ;;
@@ -76,9 +80,12 @@ parse_args() {
         esac
     done
 
-    [[ -z "$TOOLBOX_IMAGE" ]] && \
-        usage && \
-        exit;
+    if [[ -z "$TOOLBOX_IMAGE" ]]
+    then
+        TOOLBOX_IMAGE="ubuntu-debootstrap"
+        warn "No docker image specified, defaulting to '${TOOLBOX_IMAGE}'"
+    fi
+
 
     return 0
 }
@@ -88,7 +95,7 @@ parse_args() {
 
 cleanup() {
     TIMEOUT=100
-    while [[ $(${KUBECTL} get pod -l run=${TOOLBOX_NAME} -o jsonpath="{.items..metadata.name}" 2> /dev/null) ]];
+    while [[ $(${KUBECTL} ${KUBECTL_ARGS} get pod -l run=${TOOLBOX_NAME} -o jsonpath="{.items..metadata.name}" 2> /dev/null) ]];
     do
       let TIMEOUT-=5
       if [[ TIMEOUT -le 0 ]]; then
@@ -97,7 +104,7 @@ cleanup() {
       fi
 
       warn "Cleaning up ${TOOLBOX_NAME} pod..."
-      ${KUBECTL} delete pod --ignore-not-found=true -l run=${TOOLBOX_NAME} --grace-period=0
+      ${KUBECTL} ${KUBECTL_ARGS} delete pod --ignore-not-found=true -l run=${TOOLBOX_NAME} --grace-period=0
       if [ $? -ne 0 ]; then
           fail "Cleanup of ${TOOLBOX_NAME} failed. retrying in 5 seconds..."
       fi
@@ -117,7 +124,7 @@ main() {
   # do a pre-emptive cleanup in case of any leftovers
   cleanup
 
-  cat <<EOF | ${KUBECTL} create --record=true -f -
+  cat <<EOF | ${KUBECTL} ${KUBECTL_ARGS}  create --record=true -f -
 apiVersion: v1
 kind: Pod
 metadata:
@@ -136,12 +143,12 @@ spec:
       privileged: true
 EOF
 
-  POD_NAME=$(${KUBECTL} get pod -l run=${TOOLBOX_NAME} -o jsonpath="{.items..metadata.name}" 2> /dev/null)
+  POD_NAME=$(${KUBECTL} ${KUBECTL_ARGS} get pod -l run=${TOOLBOX_NAME} -o jsonpath="{.items..metadata.name}" 2> /dev/null)
   warn "Waiting for ${POD_NAME} to get Ready..."
 
   TIMEOUT=100
   # While toolbox pod status readiness != true, sleep for a bit
-  while [[ "$(${KUBECTL} get pods -l run=${TOOLBOX_NAME} -o jsonpath='{.items..status.containerStatuses..ready}' 2> /dev/null)" != "true" ]];
+  while [[ "$(${KUBECTL} ${KUBECTL_ARGS} get pods -l run=${TOOLBOX_NAME} -o jsonpath='{.items..status.containerStatuses..ready}' 2> /dev/null)" != "true" ]];
   do
     let TIMEOUT-=5
     if [[ TIMEOUT -le 0 ]]; then
@@ -151,7 +158,7 @@ EOF
     sleep 5;
   done
 
-  ${KUBECTL} attach ${POD_NAME} -i
+  ${KUBECTL} ${KUBECTL_ARGS} attach ${POD_NAME} -i
 }
 
 main "${@}"
